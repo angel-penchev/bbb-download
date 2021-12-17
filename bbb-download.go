@@ -39,44 +39,24 @@ func main() {
 	webcamsUrl := basePresentationUrl + "/video/"
 	metadataUrl := basePresentationUrl + "/metadata.xml"
 
-	//read duration of recording and meeting name from meta.xml
-	responseMeta, err := http.Get(metadataUrl)
-	if err != nil {
-		log.Fatal(err)
-	}
+	//read duration of recording and meeting name from metadata.xml
+	metadata := GetRequest(metadataUrl)
 
-	defer responseMeta.Body.Close()
-	metaBody, err := ioutil.ReadAll(responseMeta.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
+	duration := GetPropertyFromMetadata(metadata, "duration")
+	fmt.Println("duration of recording=", duration, "ms")
 
-	//finding correct duration-ending of last slide
-	timeString := strings.SplitAfter(string(metaBody), "<duration>")
-	duration := strings.Split(timeString[1], "</duration>")
-	fmt.Println("duration of recording=", duration[0], "ms")
+	meetingName := GetPropertyFromMetadata(metadata, "meetingName")
+	fmt.Println("name of the meeting=", meetingName)
 
-	meetingString := strings.SplitAfter(string(metaBody), "<meetingName>")
-	meetingName := strings.Split(meetingString[1], "</meetingName>")
-	fmt.Println("name of the meeting=", meetingName[0])
-	//read content of the shapes.svg file, and assign shapes to it
-	responseShapes, err := http.Get(shapesUrl)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer responseShapes.Body.Close()
-	shapesBody, err := ioutil.ReadAll(responseShapes.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	shapes := string(shapesBody)
+	//read content of the shapes.svg file (containing the slides), and assign shapes to it
+	shapes := string(GetRequest(shapesUrl))
 	fmt.Println("creating directory: ", presentationId)
 	if _, err := os.Stat(presentationId); os.IsNotExist(err) {
 		os.Mkdir(presentationId, 0700) // create temporary dir
 	}
 	// download webcams
 	fmt.Print("downloading webcams", "\r")
-	if err := DownloadFile(presentationId+"/"+webcamsFile, webcamsUrl+"/"+webcamsFile); err != nil {
+	if err := GetRequestWithSave(webcamsUrl+"/"+webcamsFile, presentationId+"/"+webcamsFile); err != nil {
 		panic(err)
 	}
 	fmt.Println(webcamsFile, " file is downloaded", "\r")
@@ -90,7 +70,7 @@ func main() {
 		// webcams.webm file is so small that real webcams file must be in mp4 format
 		webcamsFile = "webcams.mp4"
 		fmt.Print("downloading webcams", "\r")
-		if err := DownloadFile(presentationId+"/"+webcamsFile, webcamsUrl+"/"+webcamsFile); err != nil {
+		if err := GetRequestWithSave(webcamsUrl+"/"+webcamsFile, presentationId+"/"+webcamsFile); err != nil {
 			panic(err)
 		}
 		fmt.Println(webcamsFile, "file is downloaded", "\r")
@@ -132,7 +112,7 @@ func main() {
 		imgUrl := basePresentationUrl + "/" + pngSrc
 		//	fmt.Println (inSrc, " ", outSrc, " ", durations[i], " ", pngSrc, imgnames [i], " ", vidnames[i])
 		fmt.Print("Downloading: ", imgnames[i], "\r") // print to same line just like a counter
-		if err := DownloadFile(presentationId+"/"+imgnames[i], imgUrl); err != nil {
+		if err := GetRequestWithSave(imgUrl, presentationId+"/"+imgnames[i]); err != nil {
 			panic(err)
 		}
 		i++
@@ -141,7 +121,7 @@ func main() {
 	fmt.Println("Number of slides =", nSlides)
 	// end of download all off the slides loop
 	//correct duration of last slide
-	outValue, _ = strconv.ParseFloat(duration[0], 64)
+	outValue, _ = strconv.ParseFloat(duration, 64)
 	outValue = outValue / 1000
 	videoLength = math.Round(outValue*100) / 100
 	fmt.Println("Length of presentation =", videoLength)
@@ -202,28 +182,69 @@ func main() {
 		"-i", presentationId+"/"+"webcamsRight.mp4",
 		"-filter_complex", "[0:v][1:v]hstack=inputs=2[v]",
 		"-t", fmt.Sprint(videoLength),
-		"-map", "[v]", "-map", "1:a", meetingName[0]+".mp4")
+		"-map", "[v]", "-map", "1:a", meetingName+".mp4")
 	cmd.Run()
-	fmt.Println("Name of the final video is: ", meetingName[0])
+	fmt.Println("Name of the final video is: ", meetingName)
 	os.RemoveAll(presentationId + "/") // delete temporary dir
 	err = os.Remove("video_list.txt")  // delete video-list file
 }
 
-// DownloadFile will download a url to a local file.
-func DownloadFile(filepath string, url string) error {
-	// Get the data
-	resp, err := http.Get(url)
+// GetRequest will request data from an url.
+func GetRequest(url string) []byte {
+	// Request the data
+	res, err := http.Get(url)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}(res.Body)
+
+	// Parse response body
+	out, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return out
+}
+
+// GetRequestWithSave will download a file from an url to local storage.
+func GetRequestWithSave(url string, filepath string) error {
+	// Request the data
+	res, err := http.Get(url)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	// Create the file
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}(res.Body)
+
+	// Create the file on local storage
 	out, err := os.Create(filepath)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	// Write the body to file
-	_, err = io.Copy(out, resp.Body)
+	defer func(out *os.File) {
+		err := out.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}(out)
+
+	// Write the request body to file
+	_, err = io.Copy(out, res.Body)
 	return err
+}
+
+func GetPropertyFromMetadata(metadata []byte, property string) string {
+	timeString := strings.SplitAfter(string(metadata), "<"+property+">")
+	duration := strings.Split(timeString[1], "</"+property+">")
+	return duration[0]
 }
