@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -15,11 +16,21 @@ import (
 	"strings"
 )
 
-var webcamsFile = "webcams.webm"
-var slidesFile = "slides.mp4"
-var nSlides = 1
+type Slides struct {
+	XMLName xml.Name `xml:"svg"`
+	Slides  []Slide  `xml:"image"`
+}
+
+type Slide struct {
+	XMLName xml.Name `xml:"image"`
+	In      float64  `xml:"in,attr"`
+	Out     float64  `xml:"out,attr"`
+	Href    string   `xml:"href,attr"`
+}
 
 func main() {
+	var webcamsFile = "webcams.webm"
+	var slidesFile = "slides.mp4"
 
 	fmt.Println("BigBlueButton` video creator/downloader")
 	fmt.Print("Enter url of conference/lecture: ")
@@ -39,154 +50,151 @@ func main() {
 	webcamsUrl := basePresentationUrl + "/video/"
 	metadataUrl := basePresentationUrl + "/metadata.xml"
 
-	//read duration of recording and meeting name from metadata.xml
+	// Reading duration of recording and meeting name from metadata.xml
 	metadata := GetRequest(metadataUrl)
 
 	duration := GetPropertyFromMetadata(metadata, "duration")
-	fmt.Println("duration of recording=", duration, "ms")
-
 	meetingName := GetPropertyFromMetadata(metadata, "meetingName")
-	fmt.Println("name of the meeting=", meetingName)
+	fmt.Println("[Name: ", meetingName, " Duration: ", duration, "]")
 
-	//read content of the shapes.svg file (containing the slides), and assign shapes to it
-	shapes := string(GetRequest(shapesUrl))
-	fmt.Println("creating directory: ", presentationId)
+	// Creating a temporary folder
+	fmt.Println("Creating directory: ", presentationId, "...")
 	if _, err := os.Stat(presentationId); os.IsNotExist(err) {
 		os.Mkdir(presentationId, 0700) // create temporary dir
 	}
-	// download webcams
-	fmt.Print("downloading webcams", "\r")
-	if err := GetRequestWithSave(webcamsUrl+"/"+webcamsFile, presentationId+"/"+webcamsFile); err != nil {
-		panic(err)
-	}
+
+	// Download webcams
+	fmt.Print("Downloading webcams...", "\r")
+	GetRequestWithSave(webcamsUrl+"/"+webcamsFile, presentationId+"/"+webcamsFile)
 	fmt.Println(webcamsFile, " file is downloaded", "\r")
+
+	// Verifying webcams download
 	fi, err := os.Stat(presentationId + "/" + webcamsFile)
 	if err != nil {
 		panic(err)
 	}
+
 	fileSize := fi.Size()
-	//	fmt.Print ("file size =", fileSize,  "\r")
-	if fileSize < 1000 { // returned 404 error text
+	// returned 404 error text
+	if fileSize < 1000 {
 		// webcams.webm file is so small that real webcams file must be in mp4 format
 		webcamsFile = "webcams.mp4"
-		fmt.Print("downloading webcams", "\r")
-		if err := GetRequestWithSave(webcamsUrl+"/"+webcamsFile, presentationId+"/"+webcamsFile); err != nil {
-			panic(err)
-		}
+		fmt.Print("Downloading webcams...", "\r")
+		GetRequestWithSave(webcamsUrl+"/"+webcamsFile, presentationId+"/"+webcamsFile)
 		fmt.Println(webcamsFile, "file is downloaded", "\r")
 	}
+
+	// Parse slides for in= out= href= from /shapes.svg
+	var slides Slides
+	xml.Unmarshal(GetRequest(shapesUrl), &slides)
 
 	// Find and print slide timings, image Urls
 	durations := make(map[int]float64)
 	vidnames := make(map[int]string)
 	imgnames := make(map[int]string)
 	inValue, outValue, videoLength, truncated := 0.0, 0.0, 0.0, 0.0
-	inSrc, outSrc, pngSrc := "0.0", "10.5", "presentation/"
-	i := 1 // number of png pictures for slide
+	amountSlides := len(slides.Slides) // number of slides
 
-	//parse for in= out= href= from /shapes.svg
-	ins := strings.Split(shapes, "in=\"")
-
-	fmt.Println("Downloading Slides")
+	fmt.Println("Downloading slides...")
 	// download all off the slides loop
-	for k := 1; k < len(ins); k++ {
-		intext := strings.SplitAfter(ins[k], "\"")
-		realin := strings.Split(intext[0], "\"")
-		inSrc = realin[0]
-
-		outtext := strings.SplitAfter(ins[k], "out=\"")
-		realout := strings.Split(outtext[1], "\"")
-		outSrc = realout[0]
-
-		imgtext := strings.SplitAfter(ins[k], "xlink:href=\"")
-		realpng := strings.Split(imgtext[1], "\"")
-		pngSrc = realpng[0]
-
-		inValue, _ = strconv.ParseFloat(inSrc, 64)
-		outValue, _ = strconv.ParseFloat(outSrc, 64)
+	for currentSlide := 0; currentSlide < amountSlides; currentSlide++ {
+		inValue = slides.Slides[currentSlide].In
+		outValue = slides.Slides[currentSlide].Out
 		truncated = (outValue*10 - inValue*10) / 10
-		durations[i] = truncated
-		imgnames[i] = "s" + strconv.Itoa(i) + ".png"
-		vidnames[i] = "v" + strconv.Itoa(i) + ".mp4"
+		durations[currentSlide] = truncated
+		imgnames[currentSlide] = "s" + strconv.Itoa(currentSlide+1) + ".png"
+		vidnames[currentSlide] = "v" + strconv.Itoa(currentSlide+1) + ".mp4"
 
-		imgUrl := basePresentationUrl + "/" + pngSrc
-		//	fmt.Println (inSrc, " ", outSrc, " ", durations[i], " ", pngSrc, imgnames [i], " ", vidnames[i])
-		fmt.Print("Downloading: ", imgnames[i], "\r") // print to same line just like a counter
-		if err := GetRequestWithSave(imgUrl, presentationId+"/"+imgnames[i]); err != nil {
-			panic(err)
-		}
-		i++
+		fmt.Print("Downloading: ", imgnames[amountSlides], "\r")
+		imgUrl := basePresentationUrl + "/" + slides.Slides[currentSlide].Href
+		GetRequestWithSave(imgUrl, presentationId+"/"+imgnames[currentSlide])
 	}
-	nSlides = i - 1 // if only one slide is converted, than nSlides = 1
-	fmt.Println("Number of slides =", nSlides)
-	// end of download all off the slides loop
-	//correct duration of last slide
+
+	// Correct duration of last slide
 	outValue, _ = strconv.ParseFloat(duration, 64)
 	outValue = outValue / 1000
 	videoLength = math.Round(outValue*100) / 100
-	fmt.Println("Length of presentation =", videoLength)
 	truncated = (videoLength*10 - inValue*10) / 10
-	durations[i-1] = math.Round(truncated*100) / 100
-	fmt.Println("Duration of last slide according to meta.xml =", durations[i-1])
-	// create mp4 files from png files
+	durations[amountSlides-1] = math.Round(truncated*100) / 100
+	fmt.Println("Duration of last slide according to meta.xml =", durations[amountSlides-1])
+
+	// Create mp4 files from png files
 	fmt.Println("Creating videos from slide pictures, duration is given as seconds")
-	for j := 1; j <= nSlides; j++ {
-		fmt.Print(imgnames[j], " ", vidnames[j], " ", durations[j], "\r") // print to same line just like a counter
+	for currentSlide := 0; currentSlide <= amountSlides; currentSlide++ {
+		fmt.Print(imgnames[currentSlide], " ", vidnames[currentSlide], " ", durations[currentSlide], "\r") // print to same line just like a counter
 		cmd := exec.Command("ffmpeg", "-loop", "1", "-r", "5", "-f", "image2",
-			"-i", presentationId+"/"+imgnames[j],
-			"-c:v", "libx264", "-r", "24", "-t", fmt.Sprint(durations[j]), "-pix_fmt", "yuv420p",
+			"-i", presentationId+"/"+imgnames[currentSlide],
+			"-c:v", "libx264", "-r", "24", "-t", fmt.Sprint(durations[currentSlide]), "-pix_fmt", "yuv420p",
 			"-vf", "scale='if(gt(a,1024/768),1024,-2)':'if(gt(a,1024/768),-2,768)',pad=1024:768:(ow-iw)/2:(oh-ih)/2:color=white", // as close as 800x600
-			presentationId+"/"+vidnames[j])
+			presentationId+"/"+vidnames[currentSlide])
 		cmd.Run()
 	}
 
-	if nSlides == 1 {
-		slidesFile = "v1.mp4" // none of the videos are merged
-	} else { // there are more than one video file, so merge them
-		//create video_list.txt file to cancat with ffmpeg
+	if amountSlides == 1 {
+		// None of the videos are merged -> just use the first slide video file
+		slidesFile = "v1.mp4"
+	} else {
+		// If there are more than one video file -> merge them
+		// Create video_list.txt file to concat with ffmpeg
 		f, err := os.Create("video_list.txt")
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		for j := 1; j <= nSlides; j++ {
-			_, err := f.WriteString("file " + presentationId + "/" + vidnames[j] + "\n")
+
+		for currentSlide := 1; currentSlide <= amountSlides; currentSlide++ {
+			_, err := f.WriteString("file " + presentationId + "/" + vidnames[currentSlide] + "\n")
 			if err != nil {
 				fmt.Println(err)
 				f.Close()
 				return
 			}
 		}
+
 		err = f.Close()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		//concat slide videos to create one piece of video file: slides.mp4
 
-		fmt.Println("merging slide videos to create: slides.mp4")
+		// Concat slide videos to create one piece of video file: slides.mp4
+		fmt.Println("Merging slide videos to create: slides.mp4")
 		cmd := exec.Command("ffmpeg", "-f", "concat", "-safe", "0", "-i", "video_list.txt",
 			"-c", "copy", presentationId+"/"+slidesFile)
 		cmd.Run()
 		fmt.Println("slide videos merged")
 	}
-	//convert webcams video file to  webcamsRight.mp4
-	fmt.Println("converting ", webcamsFile, " to  webcamsRight.mp4")
+
+	// Convert webcams video file to webcamsRight.mp4
+	fmt.Println("Converting ", webcamsFile, " to  webcamsRight.mp4")
 	cmd := exec.Command("ffmpeg", "-i", presentationId+"/"+webcamsFile,
 		"-q:a", "0", "-q:v", "0",
 		"-vf", "scale=512:-2,pad=height=768:color=white",
 		presentationId+"/"+"webcamsRight.mp4")
 	cmd.Run()
-	fmt.Println("merging slides and webcams side by side")
+
+	// Merging slides and webcams
+	fmt.Println("Merging slides and webcams side by side...")
 	cmd = exec.Command("ffmpeg", "-i", presentationId+"/"+slidesFile,
 		"-i", presentationId+"/"+"webcamsRight.mp4",
 		"-filter_complex", "[0:v][1:v]hstack=inputs=2[v]",
 		"-t", fmt.Sprint(videoLength),
 		"-map", "[v]", "-map", "1:a", meetingName+".mp4")
 	cmd.Run()
+
+	// Final clean-up
 	fmt.Println("Name of the final video is: ", meetingName)
-	os.RemoveAll(presentationId + "/") // delete temporary dir
-	err = os.Remove("video_list.txt")  // delete video-list file
+	// Deleting temporary dir
+	err = os.RemoveAll(presentationId + "/")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Deleting video list file
+	err = os.Remove("video_list.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 // GetRequest will request data from an url.
@@ -213,11 +221,11 @@ func GetRequest(url string) []byte {
 }
 
 // GetRequestWithSave will download a file from an url to local storage.
-func GetRequestWithSave(url string, filepath string) error {
+func GetRequestWithSave(url string, filepath string) {
 	// Request the data
 	res, err := http.Get(url)
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
@@ -229,7 +237,7 @@ func GetRequestWithSave(url string, filepath string) error {
 	// Create the file on local storage
 	out, err := os.Create(filepath)
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
 	defer func(out *os.File) {
 		err := out.Close()
@@ -240,7 +248,9 @@ func GetRequestWithSave(url string, filepath string) error {
 
 	// Write the request body to file
 	_, err = io.Copy(out, res.Body)
-	return err
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func GetPropertyFromMetadata(metadata []byte, property string) string {
