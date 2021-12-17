@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -16,35 +17,40 @@ import (
 
 var webcamsFile = "webcams.webm"
 var slidesFile = "slides.mp4"
-var nSlides int = 1
+var nSlides = 1
 
 func main() {
 
-	fmt.Println("Bigbluebutton video creator/downloader")
+	fmt.Println("BigBlueButton` video creator/downloader")
 	fmt.Print("Enter url of conference/lecture: ")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
 	presentationUrl := scanner.Text()
-	result := strings.SplitAfter(presentationUrl, "?meetingId=")
-	presentationId := result[1]
 
-	result2 := strings.Split(result[0], "/playback/")
-	baseUrl := result2[0] + "/presentation/" + presentationId
-	shapesUrl := baseUrl + "/shapes.svg"
-	webcamsUrl := baseUrl + "/video/"
-	metaUrl := baseUrl + "/metadata.xml"
-	//	fmt.Println ("baseUrl= ", baseUrl)
+	parsedUrl, err := url.Parse(presentationUrl)
+	if err != nil {
+		panic(err)
+	}
+
+	urlSegments := strings.Split(parsedUrl.Path, "/")
+	presentationId := urlSegments[len(urlSegments)-1]
+	basePresentationUrl := parsedUrl.Scheme + "://" + parsedUrl.Host + "/presentation/" + presentationId
+	shapesUrl := basePresentationUrl + "/shapes.svg"
+	webcamsUrl := basePresentationUrl + "/video/"
+	metadataUrl := basePresentationUrl + "/metadata.xml"
 
 	//read duration of recording and meeting name from meta.xml
-	responseMeta, err := http.Get(metaUrl)
+	responseMeta, err := http.Get(metadataUrl)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	defer responseMeta.Body.Close()
 	metaBody, err := ioutil.ReadAll(responseMeta.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	//finding correct duration-ending of last slide
 	timeString := strings.SplitAfter(string(metaBody), "<duration>")
 	duration := strings.Split(timeString[1], "</duration>")
@@ -106,15 +112,15 @@ func main() {
 	for k := 1; k < len(ins); k++ {
 		intext := strings.SplitAfter(ins[k], "\"")
 		realin := strings.Split(intext[0], "\"")
-		inSrc = (realin[0])
+		inSrc = realin[0]
 
 		outtext := strings.SplitAfter(ins[k], "out=\"")
 		realout := strings.Split(outtext[1], "\"")
-		outSrc = (realout[0])
+		outSrc = realout[0]
 
 		imgtext := strings.SplitAfter(ins[k], "xlink:href=\"")
 		realpng := strings.Split(imgtext[1], "\"")
-		pngSrc = (realpng[0])
+		pngSrc = realpng[0]
 
 		inValue, _ = strconv.ParseFloat(inSrc, 64)
 		outValue, _ = strconv.ParseFloat(outSrc, 64)
@@ -123,7 +129,7 @@ func main() {
 		imgnames[i] = "s" + strconv.Itoa(i) + ".png"
 		vidnames[i] = "v" + strconv.Itoa(i) + ".mp4"
 
-		imgUrl := baseUrl + "/" + pngSrc
+		imgUrl := basePresentationUrl + "/" + pngSrc
 		//	fmt.Println (inSrc, " ", outSrc, " ", durations[i], " ", pngSrc, imgnames [i], " ", vidnames[i])
 		fmt.Print("Downloading: ", imgnames[i], "\r") // print to same line just like a counter
 		if err := DownloadFile(presentationId+"/"+imgnames[i], imgUrl); err != nil {
@@ -205,7 +211,6 @@ func main() {
 
 // DownloadFile will download a url to a local file.
 func DownloadFile(filepath string, url string) error {
-
 	// Get the data
 	resp, err := http.Get(url)
 	if err != nil {
