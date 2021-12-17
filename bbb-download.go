@@ -60,7 +60,10 @@ func main() {
 	// Creating a temporary folder
 	fmt.Println("Creating directory: ", presentationId, "...")
 	if _, err := os.Stat(presentationId); os.IsNotExist(err) {
-		os.Mkdir(presentationId, 0700) // create temporary dir
+		err := os.Mkdir(presentationId, 0700)
+		if err != nil {
+			log.Fatal(err)
+		} // create temporary dir
 	}
 
 	// Download webcams
@@ -86,12 +89,15 @@ func main() {
 
 	// Parse slides for in= out= href= from /shapes.svg
 	var slides Slides
-	xml.Unmarshal(GetRequest(shapesUrl), &slides)
+	err = xml.Unmarshal(GetRequest(shapesUrl), &slides)
+	if err != nil {
+		log.Fatal()
+	}
 
 	// Find and print slide timings, image Urls
 	durations := make(map[int]float64)
-	vidnames := make(map[int]string)
-	imgnames := make(map[int]string)
+	videoNames := make(map[int]string)
+	imageNames := make(map[int]string)
 	inValue, outValue, videoLength, truncated := 0.0, 0.0, 0.0, 0.0
 	amountSlides := len(slides.Slides) // number of slides
 
@@ -102,12 +108,12 @@ func main() {
 		outValue = slides.Slides[currentSlide].Out
 		truncated = (outValue*10 - inValue*10) / 10
 		durations[currentSlide] = truncated
-		imgnames[currentSlide] = "s" + strconv.Itoa(currentSlide+1) + ".png"
-		vidnames[currentSlide] = "v" + strconv.Itoa(currentSlide+1) + ".mp4"
+		imageNames[currentSlide] = "s" + strconv.Itoa(currentSlide+1) + ".png"
+		videoNames[currentSlide] = "v" + strconv.Itoa(currentSlide+1) + ".mp4"
 
-		fmt.Print("Downloading: ", imgnames[amountSlides], "\r")
+		fmt.Print("Downloading: ", imageNames[amountSlides], "\r")
 		imgUrl := basePresentationUrl + "/" + slides.Slides[currentSlide].Href
-		GetRequestWithSave(imgUrl, presentationId+"/"+imgnames[currentSlide])
+		GetRequestWithSave(imgUrl, presentationId+"/"+imageNames[currentSlide])
 	}
 
 	// Correct duration of last slide
@@ -121,13 +127,16 @@ func main() {
 	// Create mp4 files from png files
 	fmt.Println("Creating videos from slide pictures, duration is given as seconds")
 	for currentSlide := 0; currentSlide <= amountSlides; currentSlide++ {
-		fmt.Print(imgnames[currentSlide], " ", vidnames[currentSlide], " ", durations[currentSlide], "\r") // print to same line just like a counter
+		fmt.Print(imageNames[currentSlide], " ", videoNames[currentSlide], " ", durations[currentSlide], "\r") // print to same line just like a counter
 		cmd := exec.Command("ffmpeg", "-loop", "1", "-r", "5", "-f", "image2",
-			"-i", presentationId+"/"+imgnames[currentSlide],
+			"-i", presentationId+"/"+imageNames[currentSlide],
 			"-c:v", "libx264", "-r", "24", "-t", fmt.Sprint(durations[currentSlide]), "-pix_fmt", "yuv420p",
 			"-vf", "scale='if(gt(a,1024/768),1024,-2)':'if(gt(a,1024/768),-2,768)',pad=1024:768:(ow-iw)/2:(oh-ih)/2:color=white", // as close as 800x600
-			presentationId+"/"+vidnames[currentSlide])
-		cmd.Run()
+			presentationId+"/"+videoNames[currentSlide])
+		err := cmd.Run()
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if amountSlides == 1 {
@@ -143,10 +152,13 @@ func main() {
 		}
 
 		for currentSlide := 1; currentSlide <= amountSlides; currentSlide++ {
-			_, err := f.WriteString("file " + presentationId + "/" + vidnames[currentSlide] + "\n")
+			_, err := f.WriteString("file " + presentationId + "/" + videoNames[currentSlide] + "\n")
 			if err != nil {
 				fmt.Println(err)
-				f.Close()
+				err := f.Close()
+				if err != nil {
+					log.Fatal(err)
+				}
 				return
 			}
 		}
@@ -161,7 +173,10 @@ func main() {
 		fmt.Println("Merging slide videos to create: slides.mp4")
 		cmd := exec.Command("ffmpeg", "-f", "concat", "-safe", "0", "-i", "video_list.txt",
 			"-c", "copy", presentationId+"/"+slidesFile)
-		cmd.Run()
+		err = cmd.Run()
+		if err != nil {
+			log.Fatal(err)
+		}
 		fmt.Println("slide videos merged")
 	}
 
@@ -171,7 +186,10 @@ func main() {
 		"-q:a", "0", "-q:v", "0",
 		"-vf", "scale=512:-2,pad=height=768:color=white",
 		presentationId+"/"+"webcamsRight.mp4")
-	cmd.Run()
+	err = cmd.Run()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Merging slides and webcams
 	fmt.Println("Merging slides and webcams side by side...")
@@ -180,7 +198,10 @@ func main() {
 		"-filter_complex", "[0:v][1:v]hstack=inputs=2[v]",
 		"-t", fmt.Sprint(videoLength),
 		"-map", "[v]", "-map", "1:a", meetingName+".mp4")
-	cmd.Run()
+	err = cmd.Run()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Final clean-up
 	fmt.Println("Name of the final video is: ", meetingName)
